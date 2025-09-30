@@ -1,19 +1,23 @@
 import json
 import os
-import datetime
+import argparse
+import sys
+
 from tqdm import tqdm
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from restcli import MemMachineRestClient
 from process_chat_history import locomo_count_conversations
 from process_chat_history import load_locomo
+from openai import OpenAISummary
 
 
 class MigrationHack:
     def __init__(self, base_url="http://127.0.0.1:8080",
                  user_session_file="user_session.json",
                  locomo_file="data/locomo10.json",
-                 extract_dir="extracted"):
+                 extract_dir="extracted",
+                 api_key_file="api_key.json"):
         self.user_session_file = user_session_file
         with open(self.user_session_file, "r") as f:
             self.user_session = json.load(f)
@@ -22,10 +26,16 @@ class MigrationHack:
                                            session=self.user_session,
                                            verbose=False)
         self.locomo_file = locomo_file
+        # Extract the base filename from the locomo file path
+        self.locomo_name = os.path.splitext(os.path.basename(self.locomo_file))[0]
         self.extract_dir = extract_dir
         # list of messages in conversations loaded from file
         self.num_conversations = 0
         self.messages = {}  # key: conversation id, value: list of messages
+        self.api_key_file = api_key_file
+        with open(self.api_key_file, "r") as f:
+            self.api_key = json.load(f)["api_key"]
+        self.summaries = {}  # key: conversation id, value: list of summaries
 
     def load(self):
         total_messages = 0
@@ -35,29 +45,76 @@ class MigrationHack:
             conv_count = locomo_count_conversations(self.locomo_file, verbose=False)
             print(f"-> loaded {conv_count} conversations from locomo file")
             self.num_conversations = conv_count
-            for conv_id in range(1, self.num_conversations + 1):
+        # write into extract_dir
+        os.makedirs(self.extract_dir, exist_ok=True)
+        # Create the extract file name with timestamp
+        extract_file_prefix = f"{self.locomo_name}_extracted"
+        for conv_id in range(1, self.num_conversations + 1):
+            extract_file = f"{extract_file_prefix}_conv_{conv_id}.txt"
+            extract_file = os.path.join(self.extract_dir, extract_file)
+            if os.path.exists(extract_file):
+                print(f"== Extract file {extract_file} already cached, load from file")
+                messages = []
+                with open(extract_file, "r") as f:
+                    for line in f:
+                        messages.append(line.strip())
+                self.messages[conv_id] = messages
+            else:
                 print(f"---> loading messages from conversation {conv_id}...")
                 messages = load_locomo(self.locomo_file,
                                        start_time=0, conv_num=conv_id, max_messages=0, verbose=False)
                 print(f"---> loaded {len(messages)} messages from conversation {conv_id}")
                 total_messages += len(messages)
                 self.messages[conv_id] = messages
-        print(f"Loaded {total_messages} messages from locomo file")
-        # write into extract_dir
-        os.makedirs(self.extract_dir, exist_ok=True)
-        # Format the extracted file name with timestamp suffix
-        timestamp = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
-        # Extract the base filename from the locomo file path
-        locomo_name = os.path.splitext(os.path.basename(self.locomo_file))[0]
-        # Create the extract file name with timestamp
-        extract_file_prefix = f"{locomo_name}_extracted_{timestamp}"
+                with open(extract_file, "w") as f:
+                    # Write each message line by line to the extract file
+                    for message in self.messages[conv_id]:
+                        f.write(message + "\n")
+
+    def summarize_messages(self, summarize_every=20):
+        print(f"== Summarizing messages starts")
+        if not self.api_key:
+            raise Exception(f"Error: API key not found, please configure api_key.json")
+        openai_summary = OpenAISummary(api_key=self.api_key)
+
+        summarized_file_prefix = f"{self.locomo_name}_summarized"
+        batch_num = 1
         for conv_id in self.messages:
-            extract_file = f"{extract_file_prefix}_conv_{conv_id}.txt"
-            extract_file = os.path.join(self.extract_dir, extract_file)
-            with open(extract_file, "w") as f:
-                # Write each message line by line to the extract file
-                for message in self.messages[conv_id]:
-                    f.write(message + "\n")
+            messages = self.messages[conv_id]
+            summarized_file = f"{summarized_file_prefix}_conv_{conv_id}.txt"
+            summarized_file = os.path.join(self.extract_dir, summarized_file)
+            if os.path.exists(summarized_file):
+                print(f"== Summarized file {summarized_file} already cached, load from file")
+                if conv_id not in self.summaries or self.summaries[conv_id] is None:
+                    self.summaries[conv_id] = []
+                with open(summarized_file, "r") as f:
+                    for line in f:
+                        summary = line.strip()
+                        if summary:
+                            self.summaries[conv_id].append(summary)
+            else:
+                self.summaries[conv_id] = []
+                for i in range(0, len(messages), summarize_every):
+                    batch = messages[i:i + summarize_every]
+                    batch_text = "\n".join(batch)
+                    summary = ""
+                    try:
+                        # Get summary from OpenAI
+                        response = openai_summary.summarize(batch_text)
+                        if 'choices' in response and len(response['choices']) > 0:
+                            summary = response['choices'][0]['message']['content']
+                        else:
+                            print(f"Error: No summary generated for batch {batch_num}")
+                            print(f"Response: {response}")
+                    except Exception as e:
+                        print(f"Error processing batch {batch_num}: {e}")
+                    if summary:
+                        self.summaries[conv_id].append(summary)
+                        with open(summarized_file, "a") as f:
+                            text = summary.replace("\n", "")
+                            f.write(text + "\n")
+                    batch_num += 1
+        print(f"== Summarizing messages done")
 
     def _process_conversation(self, conv_id, messages):
         """Process a single conversation with its own progress bar"""
@@ -71,19 +128,23 @@ class MigrationHack:
         msg_pbar.close()
         return conv_id, len(messages)
 
-    def insert_memories(self):
+    def insert_memories(self, summary=False):
         print(f"--- Inserting memories starts")
 
         # Process conversations concurrently using ThreadPoolExecutor
-        with ThreadPoolExecutor(max_workers=min(self.num_conversations, 5)) as executor:
+        with ThreadPoolExecutor(max_workers=min(self.num_conversations, 10)) as executor:
+            if summary:
+                contents = self.summaries
+            else:
+                contents = self.messages
             # Submit all conversation processing tasks
             future_to_conv = {
                 executor.submit(self._process_conversation, conv_id, messages): conv_id
-                for conv_id, messages in self.messages.items()
+                for conv_id, messages in contents.items()
             }
 
             # Create a progress bar for completed conversations
-            completed_pbar = tqdm(total=len(self.messages), desc="Completed conversations", unit="conv")
+            completed_pbar = tqdm(total=len(contents), desc="Completed conversations", unit="conv")
 
             # Process completed tasks
             for future in as_completed(future_to_conv):
@@ -95,18 +156,52 @@ class MigrationHack:
 
         print(f"--- Inserting memories done")
 
-    def migrate(self):
+    def migrate(self, summarize=False, summarize_every=20):
         print(f"== Loading starts")
         self.load()
         print(f"== Loading done")
+        if summarize:
+            print(f"== Summarizing starts")
+            self.summarize_messages(summarize_every)
+            print(f"== Summarizing done")
         print(f"== Migration starts")
-        self.insert_memories()
+        self.insert_memories(summarize)
         print(f"== Migration done")
 
 
+def usage():
+    print(f"Usage: python migration.py [--base_url <url>] [--chat_history <file>] [--summarize] [--summarize_every <n>]")
+    print(f"")
+    print(f"base_url: Base URL of the MemMachine API")
+    print(f"chat_history: Chat history file")
+    print(f"summarize: Summarize messages")
+    print(f"summarize_every: Summarize every n messages")
+
+
+def get_args():
+    parser = argparse.ArgumentParser(description="Migration Hack", add_help=False)
+    parser.add_argument("--base_url", type=str, default="http://52.15.149.39:8080", help="Base URL of the MemMachine API")
+    parser.add_argument("--chat_history", type=str, default="data/locomo10.json", help="Chat history file")
+    parser.add_argument("--chat_type", type=str, default="locomo", help="Chat type: locomo or openai")
+    parser.add_argument("--summarize", action="store_true", help="Summarize messages")
+    parser.add_argument("--summarize_every", type=int, default=20, help="Summarize every n messages")
+    parser.add_argument("-h", "--help", action="store_true", help="Print usage")
+    args = parser.parse_args()
+    if args.help:
+        usage()
+        sys.exit(0)
+    return args
+
+
 if __name__ == "__main__":
-    migration_hack = MigrationHack(base_url="http://52.15.149.39:8080",
+    args = get_args()
+    base_url = args.base_url
+    chat_history = args.chat_history
+    summarize = args.summarize
+    summarize_every = args.summarize_every
+    migration_hack = MigrationHack(base_url=base_url,
                                    user_session_file="user_session.json",
-                                   locomo_file="data/locomo10.json")
-    migration_hack.migrate()
+                                   locomo_file=chat_history)
+
+    migration_hack.migrate(summarize=summarize, summarize_every=summarize_every)
     print(f"== All completed successfully")

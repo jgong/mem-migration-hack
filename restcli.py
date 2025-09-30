@@ -106,7 +106,8 @@ class MemMachineRestClient:
         start_time = time.time()
         response = requests.post(
             episodic_memory_endpoint,
-            json=payload
+            json=payload,
+            timeout=300
         )
         end_time = time.time()
 
@@ -149,7 +150,8 @@ class MemMachineRestClient:
         start_time = time.time()
         response = requests.post(
             search_episodic_memory_endpoint,
-            json=query
+            json=query,
+            timeout=300
         )
         end_time = time.time()
         latency_ms = round((end_time - start_time) * 1000, 2)
