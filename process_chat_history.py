@@ -166,9 +166,11 @@ def openai_count_conversations(infile, verbose=False):
     return(chat_count)
 
 
-def load_openai(infile, start_time=None, chat_title=None, max_messages=None, verbose=False):
+def load_openai(infile, start_time=None, conv_num=None, max_messages=None, verbose=False, chat_title=None):
     if not start_time:
         start_time = 0
+    if not conv_num:
+        conv_num = 0
     if not max_messages:
         max_messages = 0
     lines = []
@@ -185,6 +187,9 @@ def load_openai(infile, start_time=None, chat_title=None, max_messages=None, ver
     for chat in data:
         # load one chat into chat_data
         chat_count += 1
+        if conv_num and chat_count != conv_num:
+            # user asked to do one specific conversation
+            continue
         # check title
         chat_title_actual = chat['title']
         if chat_title and chat_title.lower() != chat_title_actual.lower():
@@ -271,7 +276,7 @@ def get_args():
     parser.add_argument('-t', '--start_time', action='store', help='only read messages after this time either YYYY-MM-DDTHH:MM:SS or secs since epoch')
     parser.add_argument('-n', '--max_messages', action='store', type=int, default=0, help='only read this many messages')
     parser.add_argument('--openai_chat', action='store', help='load only this chat')
-    parser.add_argument('--locomo_conversation', action='store', type=int, default=0, help='load only this conversation')
+    parser.add_argument('--conversation', action='store', type=int, default=0, help='load only this conversation')
     parser.add_argument('--how_many_conversations', action='store_true', help='how many conversations are in the input file')
     # parser.add_argument('--summarize_every', action='store', type=int, default=0, help='summarize before storing into memmachine, default is 0')
     args = parser.parse_args()
@@ -302,7 +307,7 @@ def get_args():
 def usage(args):
     prog = os.path.basename(sys.argv[0])
     # print(f'Usage: {prog} [--src <src>] [--infile <chat_history>] [--outfile <parsed_chat>] [--summarize_every <n_messages>] [--start_time <timestamp>')
-    print(f'Usage: {prog} [--src <src>] --infile <chat_history> [--outfile <parsed_chat>] [--start_time <timestamp> [--num_messages <n>] [--openai_chat <title>] [--locomo_conversation <n>] [--how_many_conversations]')
+    print(f'Usage: {prog} [--src <src>] --infile <chat_history> [--outfile <parsed_chat>] [--start_time <timestamp> [--num_messages <n>] [--openai_chat <title>] [--conversation <n>] [--how_many_conversations]')
     print(f'')
     print(f'src: input file format, either locomo or openai')
     print(f'infile: input filename')
@@ -311,7 +316,7 @@ def usage(args):
     print(f'    either YYYY-MM-DDTHH:MM:SS or secs since epoch')
     print(f'num_messages: read only this many messages')
     print(f'openai_chat: if input is openai, load only this chat title')
-    print(f'locomo_conversation: if input is locomo, load only this conversation number')
+    print(f'conversation: load only this conversation number')
     print(f'how_many_conversations: how many conversations are in the input file')
 
 
@@ -324,13 +329,13 @@ if __name__ == '__main__':
             count = locomo_count_conversations(args.infile, args.verbose)
             lines = [f'{count}']
         else:
-            lines = load_locomo(args.infile, args.start_time, args.locomo_conversation, args.max_messages, args.verbose)
+            lines = load_locomo(args.infile, args.start_time, args.conversation, args.max_messages, args.verbose)
     elif args.src == 'openai':
         if args.how_many_conversations:
             count = openai_count_conversations(args.infile, args.verbose)
             lines = [f'{count}']
         else:
-            lines = load_openai(args.infile, args.start_time, args.openai_chat, args.max_messages, args.verbose)
+            lines = load_openai(args.infile, args.start_time, args.conversation, args.max_messages, args.verbose, args.openai_chat)
     else:
         print(f'ERROR: unknown input source {args.src}', file=sys.stderr)
         sys.exit(1)
