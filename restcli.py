@@ -1,6 +1,7 @@
 import requests
 import time
 import json
+import os
 from datetime import datetime
 
 episodic_memory_path = "memories/episodic"
@@ -9,7 +10,7 @@ episodic_memory_path = "memories/episodic"
 class MemMachineRestClient:
     def __init__(self, base_url="http://127.0.0.1:8080",
                  session=None, producer=None, produced_for=None,
-                 trace=False):
+                 verbose=False, statistic_file=None):
         self.base_url = base_url
         self.api_version = "v1"
         self.session = session
@@ -26,7 +27,18 @@ class MemMachineRestClient:
         self.produced_for = produced_for
         if self.produced_for is None:
             self.produced_for = "test_agent"
-        self.trace = trace
+        self.verbose = verbose
+        self.statistic_file = statistic_file
+        if self.statistic_file is None:
+            self.statistic_file = "output/statistic.csv"
+        if not os.path.exists(self.statistic_file):
+            os.makedirs(os.path.dirname(self.statistic_file), exist_ok=True)
+        with open(self.statistic_file, "w") as f:
+            f.write("timestamp,method,url,latency_ms\n")
+        self.statistic_fp = open(self.statistic_file, "a")
+
+    def __del__(self):
+        self.statistic_fp.close()
 
     def _get_url(self, path):
         return f"{self.base_url}/{self.api_version}/{path}"
@@ -78,8 +90,10 @@ class MemMachineRestClient:
       "metadata": {}
     }'
     '''
-    def post_episodic_memory(self, message):
+    def post_episodic_memory(self, message, session_id=None):
         episodic_memory_endpoint = self._get_url(episodic_memory_path)
+        if session_id is not None:
+            self.session['session_id'] = session_id
         payload = {
             "session": self.session,
             "producer": self.producer,
@@ -96,13 +110,13 @@ class MemMachineRestClient:
         )
         end_time = time.time()
 
+        latency_ms = round((end_time - start_time) * 1000, 2)
         # Trace the request
-        if self.trace:
+        if self.verbose:
             self._trace_request("POST", episodic_memory_endpoint,
-                                payload, response, start_time, end_time)
+                                payload, response, latency_ms)
         else:
-            print(f"POST {episodic_memory_endpoint} {payload}")
-            print(f"Latency: {end_time - start_time} seconds")
+            self.statistic_fp.write(f"{datetime.now().isoformat()},POST,{episodic_memory_endpoint},{latency_ms}\n")
 
         if response.status_code != 200:
             raise Exception(f"Failed to post episodic memory: {response.text}")
@@ -140,12 +154,11 @@ class MemMachineRestClient:
         end_time = time.time()
         latency_ms = round((end_time - start_time) * 1000, 2)
 
-        if self.trace:
+        if self.verbose:
             self._trace_request("POST", search_episodic_memory_endpoint,
                                 query, response, latency_ms)
         else:
-            print(f"POST {search_episodic_memory_endpoint} {query}")
-            print(f"Latency: {latency_ms} milliseconds")
+            self.statistic_fp.write(f"{datetime.now().isoformat()},POST,{search_episodic_memory_endpoint},{latency_ms}\n")
 
         if response.status_code != 200:
             raise Exception(f"Failed to search episodic memory: {response.text}")
