@@ -6,6 +6,7 @@ import argparse
 import re
 import json
 import datetime
+import traceback
 
 
 def timestamp_compare(ts1, ts2):
@@ -153,17 +154,125 @@ def load_locomo(infile, start_time=None, conv_num=None, max_messages=None, verbo
     return(lines)
 
 
+def openai_count_conversations(infile, verbose=False):
+    if verbose:
+        print(f'occ: loading openai input file {infile}', file=sys.stderr)
+    with open(infile) as fp:
+        data = json.load(fp)
+    # loop to load every chat
+    chat_count = 0
+    for chat in data:
+        chat_count += 1
+    return(chat_count)
+
+
+def load_openai(infile, start_time=None, chat_title=None, max_messages=None, verbose=False):
+    if not start_time:
+        start_time = 0
+    if not max_messages:
+        max_messages = 0
+    lines = []
+    if verbose:
+        print(f'lo: start_time={start_time} max_messages={max_messages}', file=sys.stderr)
+    if verbose:
+        print(f'lo: loading openai input file {infile}', file=sys.stderr)
+    with open(infile) as fp:
+        data = json.load(fp)
+    # loop to load every chat
+    chat_count = 0
+    msg_count = 0
+    done = False
+    for chat in data:
+        # load one chat into chat_data
+        chat_count += 1
+        # check title
+        chat_title_actual = chat['title']
+        if chat_title and chat_title.lower() != chat_title_actual.lower():
+            if verbose:
+                print(f'lo: skipping chat title={chat_title_actual}', file=sys.stderr)
+            continue
+        # check time
+        chat_time = chat['create_time']
+        # print(f'TOM1: chat_time={chat_time}')
+        if start_time and timestamp_compare(start_time, chat_time) > 0:
+            if verbose:
+                print(f'lo: skipping old chat {chat_count} time={chat_time}', file=sys.stderr)
+            continue
+        # load messages
+        if verbose:
+            print(f'lo: loading chat title={chat_title_actual}', file=sys.stderr)
+        chat_data = []
+        for id, chat_map in chat['mapping'].items():
+            # validate
+            if 'message' not in chat_map:
+                continue
+            if not chat_map['message']:
+                continue
+            message = chat_map['message']
+            if 'author' not in message:
+                continue
+            if not message['author']:
+                continue
+            if 'role' not in message['author']:
+                continue
+            if 'content' not in message:
+                continue
+            if not message['content']:
+                continue
+            if 'content_type' not in message['content']:
+                continue
+            try:
+                msg_author = message['author']
+                msg_role = msg_author['role']
+                msg_ts = message['create_time']
+                msg_content = message['content']
+                msg_type = msg_content['content_type']
+                if msg_role == 'user' and msg_type == 'text':
+                    msg_str = ''.join(msg_content['parts'])
+                    if not msg_ts:
+                        if verbose:
+                            print(f'lo: ERROR: chat {chat_count} user message {msg_str} has no timestamp', file=sys.stderr)
+                    else:
+                        datapoint = {
+                            'timestamp': msg_ts,
+                            'text': msg_str,
+                        }
+                        chat_data.append(datapoint)
+            except Exception as ex:
+                if verbose:
+                    print(f'lo: ERROR: processing chat message={message} ex={ex}', file=sys.stderr)
+                    print(traceback.format_exc(), file=sys.stderr)
+        # sort messages
+        chat_sorted = sorted(chat_data, key=lambda x: x['timestamp'])
+        # save messages
+        for message in chat_sorted:
+            lines.append(message['text'])
+            msg_count += 1
+            if max_messages and msg_count >= max_messages:
+                # user asked to do this many messages only
+                if verbose:
+                    print(f'lo: processed max messages={msg_count}', file=sys.stderr)
+                done = True
+                break
+        if verbose:
+            print(f'lo: finished chat title={chat_title_actual}', file=sys.stderr)
+        if done:
+            break
+    return(lines)
+
+
 def get_args():
     parser = argparse.ArgumentParser(description='Process chat history', add_help=False)
     parser.add_argument('-h', '--help', action='store_true', help='print usage')
     parser.add_argument('-v', '--verbose', action='store_true', help='print debug info if available')
-    parser.add_argument('--src', action='store', default='locomo', help='openai|locomo, default=locomo')
+    parser.add_argument('-s', '--src', action='store', default='locomo', help='openai|locomo, default=locomo')
     parser.add_argument('-i', '--infile', action='store', help='input chat history')
     parser.add_argument('-o', '--outfile', action='store', help='output parsed chat')
     parser.add_argument('-t', '--start_time', action='store', help='only read messages after this time either YYYY-MM-DDTHH:MM:SS or secs since epoch')
     parser.add_argument('-n', '--max_messages', action='store', type=int, default=0, help='only read this many messages')
+    parser.add_argument('--openai_chat', action='store', help='load only this chat')
     parser.add_argument('--locomo_conversation', action='store', type=int, default=0, help='load only this conversation')
-    parser.add_argument('--locomo_how_many_conversations', action='store_true', help='how many conversations are in the input file')
+    parser.add_argument('--how_many_conversations', action='store_true', help='how many conversations are in the input file')
     # parser.add_argument('--summarize_every', action='store', type=int, default=0, help='summarize before storing into memmachine, default is 0')
     args = parser.parse_args()
     if args.help:
@@ -193,7 +302,7 @@ def get_args():
 def usage(args):
     prog = os.path.basename(sys.argv[0])
     # print(f'Usage: {prog} [--src <src>] [--infile <chat_history>] [--outfile <parsed_chat>] [--summarize_every <n_messages>] [--start_time <timestamp>')
-    print(f'Usage: {prog} [--src <src>] --infile <chat_history> [--outfile <parsed_chat>] [--start_time <timestamp> [--num_messages <n>] [--locomo_conversation <n>] [--locomo_how_many_conversations]')
+    print(f'Usage: {prog} [--src <src>] --infile <chat_history> [--outfile <parsed_chat>] [--start_time <timestamp> [--num_messages <n>] [--openai_chat <title>] [--locomo_conversation <n>] [--how_many_conversations]')
     print(f'')
     print(f'src: input file format, either locomo or openai')
     print(f'infile: input filename')
@@ -201,8 +310,9 @@ def usage(args):
     print(f'start_time: read message after this time')
     print(f'    either YYYY-MM-DDTHH:MM:SS or secs since epoch')
     print(f'num_messages: read only this many messages')
-    print(f'locomo_conversation: if input is locomo, load only this conversation')
-    print(f'locomo_how_many_conversations: how many conversations are in the input file')
+    print(f'openai_chat: if input is openai, load only this chat title')
+    print(f'locomo_conversation: if input is locomo, load only this conversation number')
+    print(f'how_many_conversations: how many conversations are in the input file')
 
 
 if __name__ == '__main__':
@@ -210,11 +320,22 @@ if __name__ == '__main__':
     args.src = args.src.lower()
     lines = []
     if args.src == 'locomo':
-        if args.locomo_how_many_conversations:
+        if args.how_many_conversations:
             count = locomo_count_conversations(args.infile, args.verbose)
             lines = [f'{count}']
         else:
             lines = load_locomo(args.infile, args.start_time, args.locomo_conversation, args.max_messages, args.verbose)
+    elif args.src == 'openai':
+        if args.how_many_conversations:
+            count = openai_count_conversations(args.infile, args.verbose)
+            lines = [f'{count}']
+        else:
+            lines = load_openai(args.infile, args.start_time, args.openai_chat, args.max_messages, args.verbose)
+    else:
+        print(f'ERROR: unknown input source {args.src}', file=sys.stderr)
+        sys.exit(1)
+
+    # save output
     if args.outfile:
         fp = open(args.outfile, 'w')
     else:
