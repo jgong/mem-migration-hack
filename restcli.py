@@ -30,7 +30,8 @@ class MemMachineRestClient:
         self.verbose = verbose
         self.statistic_file = statistic_file
         if self.statistic_file is None:
-            self.statistic_file = "output/statistic.csv"
+            timestamp = datetime.now().isoformat()
+            self.statistic_file = f"output/statistic_{timestamp}.csv"
         if not os.path.exists(self.statistic_file):
             os.makedirs(os.path.dirname(self.statistic_file), exist_ok=True)
         with open(self.statistic_file, "w") as f:

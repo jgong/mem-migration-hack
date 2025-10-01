@@ -8,14 +8,19 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from restcli import MemMachineRestClient
 from process_chat_history import locomo_count_conversations
+from process_chat_history import openai_count_conversations
 from process_chat_history import load_locomo
+from process_chat_history import load_openai
 from openai import OpenAISummary
 
 
 class MigrationHack:
     def __init__(self, base_url="http://127.0.0.1:8080",
                  user_session_file="user_session.json",
-                 locomo_file="data/locomo10.json",
+                 chat_history_file="data/locomo10.json",
+                 chat_type="locomo",
+                 start_time=0,
+                 max_messages=0,
                  extract_dir="extracted",
                  api_key_file="api_key.json"):
         self.user_session_file = user_session_file
@@ -25,9 +30,12 @@ class MigrationHack:
         self.client = MemMachineRestClient(base_url=self.base_url,
                                            session=self.user_session,
                                            verbose=False)
-        self.locomo_file = locomo_file
+        self.chat_history_file = chat_history_file
+        self.chat_type = chat_type
+        self.start_time = start_time
+        self.max_messages = max_messages
         # Extract the base filename from the locomo file path
-        self.locomo_name = os.path.splitext(os.path.basename(self.locomo_file))[0]
+        self.chat_base_name = os.path.splitext(os.path.basename(self.chat_history_file))[0]
         self.extract_dir = extract_dir
         # list of messages in conversations loaded from file
         self.num_conversations = 0
@@ -39,16 +47,21 @@ class MigrationHack:
 
     def load(self):
         total_messages = 0
-        if self.locomo_file is not None:
-            print(f"-> loading locomo file {self.locomo_file}")
+        if self.chat_history_file is not None:
+            print(f"-> loading chat history file {self.chat_history_file}")
             print(f"-> counting conversations...")
-            conv_count = locomo_count_conversations(self.locomo_file, verbose=False)
-            print(f"-> loaded {conv_count} conversations from locomo file")
+            if self.chat_type == "locomo":
+                conv_count = locomo_count_conversations(self.chat_history_file, verbose=False)
+            elif self.chat_type == "openai":
+                conv_count = openai_count_conversations(self.chat_history_file, verbose=False)
+            else:
+                raise Exception(f"Error: Invalid chat type: {self.chat_type}")
+            print(f"-> loaded {conv_count} conversations from {self.chat_type} file {self.chat_history_file}")
             self.num_conversations = conv_count
         # write into extract_dir
         os.makedirs(self.extract_dir, exist_ok=True)
         # Create the extract file name with timestamp
-        extract_file_prefix = f"{self.locomo_name}_extracted"
+        extract_file_prefix = f"{self.chat_base_name}_extracted"
         for conv_id in range(1, self.num_conversations + 1):
             extract_file = f"{extract_file_prefix}_conv_{conv_id}.txt"
             extract_file = os.path.join(self.extract_dir, extract_file)
@@ -61,8 +74,14 @@ class MigrationHack:
                 self.messages[conv_id] = messages
             else:
                 print(f"---> loading messages from conversation {conv_id}...")
-                messages = load_locomo(self.locomo_file,
-                                       start_time=0, conv_num=conv_id, max_messages=0, verbose=False)
+                if self.chat_type == "locomo":
+                    messages = load_locomo(self.chat_history_file,
+                                           start_time=0, conv_num=conv_id, max_messages=0, verbose=False)
+                elif self.chat_type == "openai":
+                    messages = load_openai(self.chat_history_file,
+                                           start_time=0, conv_num=conv_id, max_messages=0, verbose=False)
+                else:
+                    raise Exception(f"Error: Invalid chat type: {self.chat_type}")
                 print(f"---> loaded {len(messages)} messages from conversation {conv_id}")
                 total_messages += len(messages)
                 self.messages[conv_id] = messages
@@ -77,7 +96,7 @@ class MigrationHack:
             raise Exception(f"Error: API key not found, please configure api_key.json")
         openai_summary = OpenAISummary(api_key=self.api_key)
 
-        summarized_file_prefix = f"{self.locomo_name}_summarized"
+        summarized_file_prefix = f"{self.chat_base_name}_summarized"
         batch_num = 1
         for conv_id in self.messages:
             messages = self.messages[conv_id]
@@ -129,7 +148,7 @@ class MigrationHack:
         return conv_id, len(messages)
 
     def insert_memories(self, summary=False):
-        print(f"--- Inserting memories starts")
+        print(f"--- Inserting memories starts, summary={summary}")
 
         # Process conversations concurrently using ThreadPoolExecutor
         with ThreadPoolExecutor(max_workers=min(self.num_conversations, 10)) as executor:
@@ -183,7 +202,9 @@ def get_args():
     parser.add_argument("--base_url", type=str, default="http://52.15.149.39:8080", help="Base URL of the MemMachine API")
     parser.add_argument("--chat_history", type=str, default="data/locomo10.json", help="Chat history file")
     parser.add_argument("--chat_type", type=str, default="locomo", help="Chat type: locomo or openai")
-    parser.add_argument("--summarize", action="store_true", help="Summarize messages")
+    parser.add_argument("--start_time", type=str, default="0", help="only read messages after this time either YYYY-MM-DDTHH:MM:SS or secs since epoch")
+    parser.add_argument("--max_messages", type=int, default=0, help="only read this many messages")
+    parser.add_argument("--summarize", default=False, action="store_true", help="Summarize messages")
     parser.add_argument("--summarize_every", type=int, default=20, help="Summarize every n messages")
     parser.add_argument("-h", "--help", action="store_true", help="Print usage")
     args = parser.parse_args()
@@ -197,11 +218,18 @@ if __name__ == "__main__":
     args = get_args()
     base_url = args.base_url
     chat_history = args.chat_history
+    chat_type = args.chat_type
+    start_time = args.start_time
+    max_messages = args.max_messages
+    # use summarized messages when summarize is true
     summarize = args.summarize
     summarize_every = args.summarize_every
     migration_hack = MigrationHack(base_url=base_url,
                                    user_session_file="user_session.json",
-                                   locomo_file=chat_history)
+                                   chat_history_file=chat_history,
+                                   chat_type=chat_type,
+                                   start_time=start_time,
+                                   max_messages=max_messages)
 
     migration_hack.migrate(summarize=summarize, summarize_every=summarize_every)
     print(f"== All completed successfully")
