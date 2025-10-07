@@ -9,7 +9,7 @@ class OpenAISummary:
         self.api_key = api_key
         self.headers = {
             "Content-Type": "application/json",
-            "Authorization": f"Bearer {self.api_key}"
+            "Authorization": f"Bearer {self.api_key}",
         }
         self.openai_session = requests.Session()
         self.openai_session.headers.update(self.headers)
@@ -22,7 +22,9 @@ class OpenAISummary:
         self.stop = None
 
     def list_models(self):
-        response = requests.get("https://api.openai.com/v1/models", headers=self.headers)
+        response = requests.get(
+            "https://api.openai.com/v1/models", headers=self.headers
+        )
         return response.json()
 
     def get_memory_summary_prompt(self, text):
@@ -38,7 +40,7 @@ class OpenAISummary:
             "top_p": self.top_p,
             "frequency_penalty": self.frequency_penalty,
             "presence_penalty": self.presence_penalty,
-            "stop": self.stop
+            "stop": self.stop,
         }
         response = self.openai_session.post(self.openai_url, json=payload, timeout=300)
         self.openai_session.close()
@@ -63,8 +65,8 @@ if __name__ == "__main__":
     with open("extracted/locomo10_extracted_20250930140245_conv_1.txt", "r") as f:
         for line in f:
             line = line.strip()
-            line = re.sub(r'\\n', ' ', line)
-            line = re.sub(r'\n', ' ', line)
+            line = re.sub(r"\\n", " ", line)
+            line = re.sub(r"\n", " ", line)
             messages.append(line)
 
     print(f"Total messages loaded: {len(messages)}")
@@ -75,20 +77,24 @@ if __name__ == "__main__":
 
     for i in range(0, len(messages), batch_size):
         batch = messages[i:i + batch_size]
-        print(f"\n--- Processing Batch {batch_num} (messages {i+1}-{min(i+batch_size, len(messages))}) ---")
+        print(
+            f"\n--- Processing Batch {batch_num} (messages {i+1}-{min(i+batch_size, len(messages))}) ---"
+        )
 
         # Join messages for summarization
         batch_text = "\n".join(batch)
 
         # Create summary prompt
-        summary_prompt = f"Please summarize the following conversation messages:\n\n{batch_text}"
+        summary_prompt = (
+            f"Please summarize the following conversation messages:\n\n{batch_text}"
+        )
 
         try:
             # Get summary from OpenAI
             response = openai_summary.summarize(summary_prompt)
 
-            if 'choices' in response and len(response['choices']) > 0:
-                summary = response['choices'][0]['message']['content']
+            if "choices" in response and len(response["choices"]) > 0:
+                summary = response["choices"][0]["message"]["content"]
                 print(f"Batch {batch_num} Summary:")
                 print(summary)
             else:
